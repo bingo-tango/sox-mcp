@@ -12,7 +12,7 @@ import asyncio
 import json
 import os
 import shutil
-from datetime import timedelta
+from datetime import timedelta, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -123,6 +123,25 @@ async def list_tools():
                     }
                 },
                 "required": ["file_path"],
+            },
+        ),
+        Tool(
+            name="list_files",
+            description="List files in a directory. Useful for discovering audio files in a folder.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "directory_path": {
+                        "type": "string",
+                        "description": "Path to the directory to list."
+                    },
+                    "extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: list of extensions to filter by (e.g. ['wav', 'mp3']).",
+                    },
+                },
+                "required": ["directory_path"],
             },
         ),
         # -- Conversion -------------------------------------------------------
@@ -310,6 +329,7 @@ async def list_tools():
 async def call_tool(name: str, arguments: dict):
     router = {
         "audio_info": _handle_audio_info,
+        "list_files": _handle_list_files,
         "convert_audio": _handle_convert,
         "resample": _handle_resample,
         "remix_channels": _handle_remix,
@@ -327,6 +347,36 @@ async def call_tool(name: str, arguments: dict):
 
 
 # -- audio_info -------------------------------------------------------------
+
+async def _handle_list_files(args: dict):
+    path_str = args["directory_path"]
+    extensions = args.get("extensions", [])
+
+    p = Path(path_str)
+    if not p.is_dir():
+        return _err(f"'{path_str}' is not a directory or does not exist.")
+
+    files_found = []
+    ext_set = {ext.lower().lstrip('.') for ext in extensions}
+
+    try:
+        for entry in p.iterdir():
+            if entry.is_file():
+                ext = entry.suffix.lower().lstrip('.')
+                if not extensions or ext in ext_set:
+                    stats = entry.stat()
+                    mtime = datetime.fromtimestamp(stats.st_mtime).isoformat()
+                    files_found.append({
+                        "name": entry.name,
+                        "size_bytes": stats.st_size,
+                        "extension": ext,
+                        "last_modified": mtime
+                    })
+    except Exception as e:
+        return _err(f"Error reading directory: {str(e)}")
+
+    return _ok(f"Found {len(files_found)} files in {path_str}.", files=files_found)
+
 
 async def _handle_audio_info(args: dict):
     raw = args["file_path"]

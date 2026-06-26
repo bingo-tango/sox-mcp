@@ -80,6 +80,63 @@ async def main():
                         print(f"    ERROR: {e}")
                         results.append(("Audio info", False))
 
+            # 5. Test list_files
+            print("[5] call list_files...")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Create dummy files
+                files_to_create = [
+                    os.path.join(tmpdir, "test1.wav"),
+                    os.path.join(tmpdir, "test2.mp3"),
+                    os.path.join(tmpdir, "test3.txt"),
+                ]
+                for f in files_to_create:
+                    with open(f, "w") as dummy:
+                        dummy.write("dummy content")
+
+                try:
+                    # Test listing all files
+                    result = await session.call_tool("list_files", {
+                        "directory_path": tmpdir,
+                    })
+
+                    text = ""
+                    for content in result.content:
+                        if hasattr(content, "text"):
+                            text = content.text
+                    print(f"    Response: {text[:300]}")
+
+                    # Check if it contains expected files (parsing simple text check or metadata if available)
+                    # The current implementation returns metadata in the text content
+                    # We'll just check if it's a success response
+                    if "Found 3 files" in text:
+                        print("    OK — Found correct number of files")
+                        results.append(("List files (all)", True))
+                    else:
+                        print(f"    WARN — unexpected text: {text[:100]}")
+                        results.append(("List files (all)", False))
+
+                    # Test with extensions filter
+                    result_ext = await session.call_tool("list_files", {
+                        "directory_path": tmpdir,
+                        "extensions": ["wav"],
+                    })
+
+                    text_ext = ""
+                    for content in result_ext.content:
+                        if hasattr(content, "text"):
+                            text_ext = content.text
+
+                    if "Found 1 files" in text_ext:
+                         print("    OK — Extension filter works")
+                         results.append(("List files (filter)", True))
+                    else:
+                         print(f"    WARN — extension filter failed: {text_ext[:50]}")
+                         results.append(("List files (filter)", False))
+
+                except Exception as e:
+                    print(f"    ERROR calling list_files: {e}")
+                    results.append(("List files", False))
+
     # Summary
     print("\n=== SUMMARY ===")
     passed = sum(1 for _, ok in results if ok)
