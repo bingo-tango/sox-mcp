@@ -8,6 +8,7 @@ agents can inspect audio metadata and perform common operations
 Each tool returns JSON text the LLM can reliably parse.
 """
 
+import re
 import asyncio
 import json
 import os
@@ -388,14 +389,13 @@ async def _handle_audio_info(args: dict):
 
     results = []
     for fp in files:
-        err = _check_file(fp)
-        if err:
-            results.append({"file": fp, "error": err})
+        if (e := _check_file(fp)):
+            results.append({"file": fp, "error": e})
             continue
 
-        flags = ["-t", "-r", "-c", "-s", "-d", "-D", "-b", "-B", "-e"]
+        # Call soxi -V to get detailed metadata
         proc = await asyncio.create_subprocess_exec(
-            SOXI, *flags, fp,
+            SOXI, "-V", fp,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -404,27 +404,61 @@ async def _handle_audio_info(args: dict):
             results.append({"file": fp, "error": stderr.decode(errors="replace").strip()})
             continue
 
-        # Parse the soxi output lines
-        info = {}
-        for line in stdout.decode(errors="replace").strip().splitlines():
-            if ":" in line:
-                key, _, val = line.partition(":")
-                info[key.strip().lower().replace(" ", "_")] = val.strip()
-            else:
-                info["raw"] = line.strip()
+        output = stdout.decode(errors="replace")
+        info = {"file": fp}
 
-        # Also grab comments
-        proc2 = await asyncio.create_subprocess_exec(
-            SOXI, "-a", fp,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out2, _ = await proc2.communicate()
-        comments = out2.decode(errors="replace").strip()
-        if comments:
-            info["comments"] = comments
+        # Parsing logic for soxi -V output
+        # Example lines:
+        # Channels       : 1
+        # Sample Rate    : 48000
+        # Precision      : 16-bit
+        # Duration       : 00:14:59.66 = 43183908 samples ~ 67474.9 CDDA sectors
+        # Sample Encoding: 16-bit FLAC
 
-        info["file"] = fp
+        # Regex patterns
+        patterns = {
+            "channels": r"Channels\s*:\s*(\d+)",
+            "sample_rate": r"Sample Rate\s*:\s*(\d+)",
+            "bit_depth": r"Precision\s*:\s*(\d+)-bit",
+            "duration_text": r"Duration\s*:\s*([^=]+)",
+            "samples": r"=\s*(\d+)\s*samples",
+            "format": r"Sample Encoding\s*:\s*(.*)",
+        }
+
+        for key, pattern in patterns.items():
+            match = re.search(pattern, output)
+            if match:
+                val = match.group(1).strip()
+                if key == "channels" or key == "sample_rate" or key == "samples":
+                    try:
+                        info[key] = int(val)
+                    except ValueError:
+                        info[key] = val
+                elif key == "bit_depth":
+                    try:
+                        info[key] = int(val)
+                    except ValueError:
+                        info[key] = val
+                else:
+                    info[key] = val
+
+        # Handle duration as seconds if possible
+        if "duration_text" in info:
+            dur_str = info.pop("duration_text")
+            # Try to parse the H:MM:SS.ss part
+            try:
+                # Duration is usually '00:14:59.66'
+                time_part = dur_str.split('=')[0].strip()
+                # Simple way to convert H:M:S to seconds
+                parts = time_part.split(':')
+                if len(parts) == 3:
+                    h, m, s = parts
+                    total_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                    info["duration_seconds"] = total_seconds
+                info["duration"] = time_part
+            except Exception:
+                info["duration"] = dur_str
+
         results.append(info)
 
     return _ok(f"Retrieved metadata for {len(results)} file(s).", metadata=results)
